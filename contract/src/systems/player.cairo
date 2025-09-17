@@ -82,7 +82,7 @@ impl ContractAddressDefault of Default<ContractAddress> {
 pub mod PlayerSystem {
     use starknet::{ContractAddress, get_caller_address};
     use super::IPlayerSystem;
-    use crate::models::player::{Player, PlayerTrait};
+    use crate::models::player::{Player, AssertTrait};
     use super::PlayerData;
     use dojo::model::{Model, ModelStorage, ModelValueStorage};
     use dojo::world::WorldStorage;
