@@ -79,6 +79,23 @@ pub impl InventoryImpl of InventoryTrait {
 
         found
     }
+
+    fn has_item(self: @Inventory, item_id: u32) -> bool {
+        let mut i = 0;
+        let mut found = false;
+
+        while i != self.items.len() {
+            let current_item = self.items.at(i);
+
+            if current_item.id == @item_id {
+                found = true;
+            }
+
+            i += 1;
+        };
+
+        found
+    }
 }
 
 #[generate_trait]
@@ -177,5 +194,39 @@ mod tests {
         assert(
             inventory.available_space() == MAX_INVENTORY_CAPACITY - 1, 'Should have one less space',
         );
+    }
+
+    #[test]
+    fn test_has_item_empty_inventory() {
+        let inventory = InventoryImpl::new(1);
+        assert!(!inventory.has_item(1), "Empty inventory should not have item");
+    }
+
+    #[test]
+    fn test_has_item_existing_item() {
+        let mut inventory = InventoryImpl::new(1);
+        let item = ItemImpl::new(1, "sword", "a basic sword", 100, ItemType::Upgrade, true);
+        inventory.add_item(item);
+        assert(inventory.has_item(1), 'Should find existing item');
+    }
+
+    #[test]
+    fn test_has_item_non_existing_item() {
+        let mut inventory = InventoryImpl::new(1);
+        let item = ItemImpl::new(1, "sword", "a basic sword", 100, ItemType::Upgrade, true);
+        inventory.add_item(item);
+        assert!(!inventory.has_item(2), "Should not find non-existing item");
+    }
+
+    #[test]
+    fn test_has_item_multiple_items() {
+        let mut inventory = InventoryImpl::new(1);
+        let item1 = ItemImpl::new(1, "sword", "a basic sword", 100, ItemType::Upgrade, true);
+        let item2 = ItemImpl::new(2, "potion", "healing potion", 50, ItemType::Consumable, true);
+        inventory.add_item(item1);
+        inventory.add_item(item2);
+        assert(inventory.has_item(1), 'Should find first item');
+        assert(inventory.has_item(2), 'Should find second item');
+        assert!(!inventory.has_item(3), "Should not find non-existing item");
     }
 }

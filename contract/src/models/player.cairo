@@ -9,6 +9,7 @@ pub struct Player {
     pub level: u8,
     pub xp: u32,
     pub current_wave: u32,
+    pub in_game: bool,
 }
 
 #[derive(Copy, Drop, Serde, Debug)]
@@ -46,7 +47,7 @@ pub impl PlayerAssert of AssertTrait {
 pub impl ZeroablePlayerTrait of Zero<Player> {
     #[inline(always)]
     fn zero() -> Player {
-        Player { address: ZERO_ADDRESS(), level: 0, xp: 0, current_wave: 0 }
+        Player { address: ZERO_ADDRESS(), level: 0, xp: 0, current_wave: 0, in_game: false }
     }
 
     #[inline(always)]
@@ -61,7 +62,7 @@ pub impl ZeroablePlayerTrait of Zero<Player> {
 }
 
 pub fn spawn_player(address: ContractAddress) -> Player {
-    Player { address, level: 1, xp: 0, current_wave: 1 }
+    Player { address, level: 1, xp: 0, current_wave: 1, in_game: true }
 }
 
 #[cfg(test)]
@@ -78,6 +79,7 @@ mod tests {
         assert(player.level == 1, 'Invalid level');
         assert(player.xp == 0, 'Invalid xp');
         assert(player.current_wave == 1, 'Invalid wave');
+        assert(player.in_game == true, 'Invalid in_game');
     }
 
     #[test]
@@ -85,5 +87,6 @@ mod tests {
         let zero_player = ZeroablePlayerTrait::zero();
         assert(zero_player.is_zero(), 'Should be zero');
         assert(zero_player.level == 0, 'Level should be zero');
+        assert(zero_player.in_game == false, 'in_game should be false');
     }
 }

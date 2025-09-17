@@ -7,7 +7,7 @@ pub trait IBrawlGame<T> {
     fn take_damage(ref self: T, amount: u32);
     fn attack_enemy(ref self: T, enemy_id: u64, damage: u32);
     fn get_player_status(ref self: T) -> PlayerStatus;
-    fn use_item(ref self: T, item_id: u32);
+    fn use_item(ref self: T, item_id: u32, inventory_id: u32);
     fn create_ability(
         ref self: T,
         ability_id: u256,
@@ -19,11 +19,12 @@ pub trait IBrawlGame<T> {
     ) -> u256;
 }
 
-#[derive(Copy, Drop, Serde)]
+#[derive(Copy, Default, Drop, Serde)]
 pub enum PlayerStatus {
     Alive,
     Dead,
     InGame,
+    #[default]
     Waiting,
 }
 
@@ -42,10 +43,12 @@ pub mod brawl_game {
     use stark_brawl::models::player::{Player, PlayerTrait, spawn_player, ZeroablePlayerTrait};
 
     use stark_brawl::models::item::{Item, ItemType};
-    use stark_brawl::models::inventory::{Inventory};
+    use stark_brawl::models::inventory::{Inventory, InventoryTrait};
     use stark_brawl::models::enemy::{Enemy, EnemySystem};
     use stark_brawl::store::{Store, StoreImpl};
     use stark_brawl::systems::player::{IPlayerSystemDispatcher, IPlayerSystemDispatcherTrait};
+
+    use core::num::traits::Bounded;
 
     #[storage]
     struct Storage {
@@ -63,10 +66,17 @@ pub mod brawl_game {
         fn join_game(ref self: ContractState) {
             let mut world = self.world_default();
             let caller = get_caller_address();
+            let existing_player: Player = world.read_model(caller);
 
-            let player = spawn_player(caller);
-
-            world.write_model(@player);
+            if existing_player.is_zero() {
+                let player = spawn_player(caller);
+                world.write_model(@player);
+            } else {
+                assert(!existing_player.in_game, 'Player already in active game');
+                let mut player = existing_player;
+                player.in_game = true;
+                world.write_model(@player);
+            }
 
             let player_system_dispatcher = self.player_system_dispatcher();
             player_system_dispatcher.initialize(caller);
@@ -81,6 +91,7 @@ pub mod brawl_game {
             // Check if the player exists
             let player: Player = world.read_model(caller);
             assert(!player.is_zero(), 'Player does not exist');
+            assert(player.in_game, 'Player not in active game');
 
             // Check if the ability exists
             let ability: Ability = world.read_model(ability_id);
@@ -136,15 +147,37 @@ pub mod brawl_game {
         }
 
         fn take_damage(ref self: ContractState, amount: u32) {
-            // let mut world = self.world_default();
+            let caller = get_caller_address();
+            let mut world = self.world_default();
+            let player: Player = world.read_model(caller);
+
+            assert(!player.is_zero(), 'Player does not exist');
+            assert(player.in_game, 'Player not in active game');
+
             let player_system_dispatcher = self.player_system_dispatcher();
 
-            player_system_dispatcher.take_damage(get_caller_address(), amount.try_into().unwrap());
+            assert(amount <= Bounded::MAX, 'Damage too large');
+
+            let damage_amount: u16 = amount.try_into().unwrap();
+            player_system_dispatcher.take_damage(caller, damage_amount);
+
+            // Check if died and cleanup game session
+            if !player_system_dispatcher.is_alive(caller) {
+                let mut dead_player = player;
+                dead_player.in_game = false;
+                world.write_model(@dead_player);
+            }
         }
 
         fn attack_enemy(ref self: ContractState, enemy_id: u64, damage: u32) {
             let caller = get_caller_address();
             let world = self.world_default();
+            let player: Player = world.read_model(caller);
+            assert(!player.is_zero(), 'Player does not exist');
+            assert(player.in_game, 'Player not in active game');
+
+            let player_system_dispatcher = self.player_system_dispatcher();
+            assert(player_system_dispatcher.is_alive(caller), 'Player not alive');
 
             // Instantiate the Store to interact with models
             let mut store: Store = StoreImpl::new(world);
@@ -173,31 +206,73 @@ pub mod brawl_game {
 
         fn get_player_status(ref self: ContractState) -> PlayerStatus {
             let caller = get_caller_address();
-            let player_system_dispatcher = self.player_system_dispatcher();
+            let world = self.world_default();
+            let player: Player = world.read_model(caller);
 
-            if player_system_dispatcher.is_alive(caller) {
+            if player.is_zero() {
+                return PlayerStatus::Waiting;
+            }
+
+            let player: Player = world.read_model(caller);
+            let player_system_dispatcher = self.player_system_dispatcher();
+            let alive = player_system_dispatcher.is_alive(caller);
+
+            if player.in_game {
+                PlayerStatus::InGame
+            } else if alive {
                 PlayerStatus::Alive
             } else {
                 PlayerStatus::Dead
             }
         }
 
-        fn use_item(ref self: ContractState, item_id: u32) {
+        fn use_item(ref self: ContractState, item_id: u32, inventory_id: u32) {
             let mut world = self.world_default();
             let caller = get_caller_address();
 
-            let mut inventory: Inventory = world.read_model(caller);
-            let item: Item = world.read_model(item_id);
-            let player_system_dispatcher = self.player_system_dispatcher();
+            // Validate player exists
+            let player: Player = world.read_model(caller);
+            assert(!player.is_zero(), 'Player does not exist');
+            assert(player.in_game, 'Player not in active game');
 
+            // Validate player is alive
+            let player_system_dispatcher = self.player_system_dispatcher();
+            let is_player_alive = player_system_dispatcher.is_alive(caller);
+            assert(is_player_alive, 'Player not alive');
+
+            // Validate item exists
+            let item: Item = world.read_model(item_id);
+            assert(item.name.len() != 0, 'Item not found');
+            assert(item.usable, 'Item not usable');
+
+            // Validate item is in inventory
+            let mut inventory: Inventory = world.read_model(inventory_id);
+            assert(inventory.is_non_zero(), 'No inventory for player');
+            let has_item = inventory.has_item(item_id);
+            assert(has_item, 'Item not in inventory');
+
+            // Remove item from inventory
+            let removed = inventory.remove_item(item_id);
+            assert(removed, 'Failed to remove item');
+
+            // Apply item effects based on type
             match item.item_type {
-                ItemType::Trap => {},
-                ItemType::Upgrade => {
+                ItemType::Trap => {
+                    // Apply trap effect: temporary defense boost
+                    // Assuming trap creates a temporary shield effect
                     player_system_dispatcher.upgrade_max_hp(caller, item.value);
                 },
-                ItemType::Consumable => { player_system_dispatcher.heal(caller, item.value); },
+                ItemType::Upgrade => {
+                    // Apply upgrade effect: permanent max HP increase
+                    player_system_dispatcher.upgrade_max_hp(caller, item.value);
+                },
+                ItemType::Consumable => {
+                    // Apply consumable effect: heal player
+                    player_system_dispatcher.heal(caller, item.value);
+                },
             }
 
+            // Update inventory in storage
             world.write_model(@inventory);
         }
 
@@ -332,7 +407,7 @@ pub mod brawl_game {
         }
 
         fn apply_ability_effect(
-            self: @ContractState,
+            ref self: ContractState,
             effect_type: AbilityEffectType,
             effect_amount: u32,
             target: ContractAddress,
@@ -348,6 +423,14 @@ pub mod brawl_game {
                 AbilityEffectType::Damage => {
                     let damage_amount: u16 = effect_amount.try_into().unwrap();
                     player_system_dispatcher.take_damage(target, damage_amount);
+
+                    // Check if died and cleanup game session
+                    if !player_system_dispatcher.is_alive(target) {
+                        let mut world = self.world_default();
+                        let mut target_player: Player = world.read_model(target);
+                        target_player.in_game = false;
+                        world.write_model(@target_player);
+                    }
                 },
                 AbilityEffectType::Heal => {
                     let heal_amount: u16 = effect_amount.try_into().unwrap();
@@ -364,6 +447,14 @@ pub mod brawl_game {
                 AbilityEffectType::DamageOverTime => {
                     let damage_amount: u16 = effect_amount.try_into().unwrap();
                     player_system_dispatcher.take_damage(target, damage_amount);
+
+                    // Check if died and cleanup game session
+                    if !player_system_dispatcher.is_alive(target) {
+                        let mut world = self.world_default();
+                        let mut target_player: Player = world.read_model(target);
+                        target_player.in_game = false;
+                        world.write_model(@target_player);
+                    }
                 },
             }
         }
